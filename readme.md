@@ -33,8 +33,6 @@ Run `task` to see all possible commands.
 
 Any PR to improve is welcome. [codex](https://github.com/openai/codex) & [cursor](https://cursor.com) are nice for dev. Great **working** & **useful** patches are most appreciated (ideally). Issues with bugs or ideas are welcome too.
 
-Note that this CLI is very opinionated in how workflows are done. Suggestions are welcome of course but we want to give our happy path of how we at [1focus.ai](https://1focus.ai) plan to write complex software of any kind.
-
 ### 🖤
 
 [![Discord](https://go.nikiv.dev/badge-discord)](https://go.nikiv.dev/discord) [![X](https://go.nikiv.dev/badge-x)](https://x.com/nikivdev) [![nikiv.dev](https://go.nikiv.dev/badge-nikiv)](https://nikiv.dev)
