@@ -1,0 +1,57 @@
+version: '3'
+
+tasks:
+  default:
+    desc: List available tasks.
+    silent: true
+    cmds:
+      - task --list
+
+  setup:
+    desc: Ensure Go is installed and download module dependencies.
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        if ! command -v go >/dev/null 2>&1; then
+          echo "Go toolchain 'go' not found in PATH."
+          echo "Install it from https://go.dev/doc/install"
+          exit 1
+        fi
+        go version >/dev/null
+        repo_root="$PWD"
+        export GOCACHE="${GOCACHE:-$repo_root/.gocache}"
+        export GOMODCACHE="${GOMODCACHE:-$repo_root/.gomodcache}"
+        mkdir -p "$GOCACHE" "$GOMODCACHE"
+        if ! go mod download >/dev/null 2>&1; then
+          echo "Warning: unable to download Go modules; try again once network access is available."
+        fi
+        echo "✔️ ghost dependencies ready"
+
+  run:
+    desc: Run the ghost daemon from source (pass CLI args after `--`).
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        repo_root="$PWD"
+        export GOCACHE="${GOCACHE:-$repo_root/.gocache}"
+        export GOMODCACHE="${GOMODCACHE:-$repo_root/.gomodcache}"
+        mkdir -p "$GOCACHE" "$GOMODCACHE"
+        go run ./cmd/ghost {{.CLI_ARGS}}
+
+  deploy:
+    desc: Build and install the ghost binary to ~/bin/ghost.
+    silent: true
+    cmds:
+      - |
+        set -euo pipefail
+        repo_root="$PWD"
+        export GOCACHE="${GOCACHE:-$repo_root/.gocache}"
+        export GOMODCACHE="${GOMODCACHE:-$repo_root/.gomodcache}"
+        mkdir -p "$GOCACHE" "$GOMODCACHE"
+        install_dir="$HOME/bin"
+        mkdir -p "$install_dir"
+        go build -o "$install_dir/ghost" ./cmd/ghost
+        chmod 755 "$install_dir/ghost"
+        echo "Installed ghost to $install_dir/ghost"
