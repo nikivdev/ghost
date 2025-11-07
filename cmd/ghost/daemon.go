@@ -62,21 +62,23 @@ func (m *WatchManager) swapJobs(jobs []*watchJob) []*watchJob {
 }
 
 type GhostDaemon struct {
-	configPath   string
-	manager      *WatchManager
-	watcher      *fsnotify.Watcher
-	watcherDone  chan struct{}
-	reloadMu     sync.Mutex
-	configFiles  map[string]struct{}
-	configDirs   map[string]struct{}
-	debounceTime time.Duration
+	configPath    string
+	manager       *WatchManager
+	windowTracker *WindowTracker
+	watcher       *fsnotify.Watcher
+	watcherDone   chan struct{}
+	reloadMu      sync.Mutex
+	configFiles   map[string]struct{}
+	configDirs    map[string]struct{}
+	debounceTime  time.Duration
 }
 
 func NewGhostDaemon(configPath string) *GhostDaemon {
 	return &GhostDaemon{
-		configPath:   configPath,
-		manager:      &WatchManager{},
-		debounceTime: 150 * time.Millisecond,
+		configPath:    configPath,
+		manager:       &WatchManager{},
+		windowTracker: NewWindowTracker(),
+		debounceTime:  150 * time.Millisecond,
 	}
 }
 
@@ -100,6 +102,9 @@ func (d *GhostDaemon) Stop() {
 		d.watcher = nil
 	}
 	d.manager.StopAll()
+	if d.windowTracker != nil {
+		d.windowTracker.Stop()
+	}
 }
 
 func (d *GhostDaemon) reloadConfig() error {
@@ -109,6 +114,11 @@ func (d *GhostDaemon) reloadConfig() error {
 	cfg, err := readConfig(d.configPath)
 	if err != nil {
 		return err
+	}
+	if d.windowTracker != nil {
+		if err := d.windowTracker.Apply(cfg.WindowTracker); err != nil {
+			return err
+		}
 	}
 	d.manager.Apply(cfg)
 	return nil

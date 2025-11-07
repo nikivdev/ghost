@@ -30,8 +30,9 @@ var allowedEvents = map[string]struct{}{
 }
 
 type rawConfig struct {
-	Defaults rawDefaults  `toml:"defaults"`
-	Watchers []rawWatcher `toml:"watchers"`
+	Defaults      rawDefaults      `toml:"defaults"`
+	Watchers      []rawWatcher     `toml:"watchers"`
+	WindowTracker rawWindowTracker `toml:"window_tracker"`
 }
 
 type rawDefaults struct {
@@ -61,8 +62,16 @@ type rawWatcher struct {
 	EnvOverrides   map[string]string `toml:"-"`
 }
 
+type rawWindowTracker struct {
+	Enabled        *bool  `toml:"enabled"`
+	Applications   any    `toml:"applications"`
+	PollIntervalMs *int64 `toml:"poll_interval_ms"`
+	DBPath         string `toml:"db_path"`
+}
+
 type NormalizedConfig struct {
-	Watchers []NormalizedWatcher
+	Watchers      []NormalizedWatcher
+	WindowTracker WindowTrackerConfig
 }
 
 type matcher struct {
@@ -92,6 +101,14 @@ type NormalizedWatcher struct {
 	KillTimeout    time.Duration
 	UseShell       bool
 	SingleFile     string
+}
+
+type WindowTrackerConfig struct {
+	Enabled      bool
+	Applications []string
+	PollInterval time.Duration
+	DBPath       string
+	TrackAll     bool
 }
 
 type Trigger struct {
@@ -131,6 +148,12 @@ func normalizeConfig(raw rawConfig) (NormalizedConfig, error) {
 		}
 		result.Watchers = append(result.Watchers, normalized)
 	}
+
+	tracker, err := normalizeWindowTracker(raw.WindowTracker)
+	if err != nil {
+		return NormalizedConfig{}, err
+	}
+	result.WindowTracker = tracker
 
 	return result, nil
 }
@@ -251,6 +274,41 @@ func normalizeWatcher(raw rawWatcher, index int, defaults rawDefaults) (Normaliz
 	}, nil
 }
 
+func normalizeWindowTracker(raw rawWindowTracker) (WindowTrackerConfig, error) {
+	const defaultDB = "~/.db/ghost/windows.sqlite"
+
+	appsRaw, err := valueToStringSlice(raw.Applications)
+	if err != nil {
+		return WindowTrackerConfig{}, fmt.Errorf("window_tracker.applications: %w", err)
+	}
+	apps := normalizeAppList(appsRaw)
+	trackAll := len(apps) == 0
+
+	enabled := valueOrDefaultBool(raw.Enabled, len(apps) > 0)
+
+	pollInterval := chooseDuration(raw.PollIntervalMs, nil, time.Second)
+	if pollInterval <= 0 {
+		pollInterval = time.Second
+	}
+
+	dbPathInput := strings.TrimSpace(raw.DBPath)
+	if dbPathInput == "" {
+		dbPathInput = defaultDB
+	}
+	dbPath, err := resolvePath(dbPathInput)
+	if err != nil {
+		return WindowTrackerConfig{}, fmt.Errorf("window_tracker.db_path: %w", err)
+	}
+
+	return WindowTrackerConfig{
+		Enabled:      enabled && (trackAll || len(apps) > 0),
+		Applications: apps,
+		PollInterval: pollInterval,
+		DBPath:       dbPath,
+		TrackAll:     trackAll,
+	}, nil
+}
+
 func choosePath(raw rawWatcher) (string, error) {
 	if str, ok := valueToString(raw.Directory); ok && str != "" {
 		return str, nil
@@ -315,6 +373,27 @@ func continueIfEmpty(patterns []string) []string {
 			continue
 		}
 		result = append(result, pattern)
+	}
+	return result
+}
+
+func normalizeAppList(apps []string) []string {
+	if len(apps) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(apps))
+	result := make([]string, 0, len(apps))
+	for _, app := range apps {
+		app = strings.TrimSpace(app)
+		if app == "" {
+			continue
+		}
+		key := strings.ToLower(app)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, app)
 	}
 	return result
 }
