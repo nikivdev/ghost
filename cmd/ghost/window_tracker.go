@@ -15,12 +15,14 @@ import (
 )
 
 var errWindowEnumerationUnavailable = errors.New("window enumeration unavailable on this platform")
+var accessibilityWarnOnce sync.Once
 
 type windowSnapshot struct {
 	ownerName   string
 	windowTitle string
 	windowID    uint64
 	layer       int
+	ownerPID    int32
 }
 
 type WindowTracker struct {
@@ -188,7 +190,7 @@ func (t *WindowTracker) pollOnce(now time.Time) error {
 		if !ok {
 			continue
 		}
-		title := normalizeWindowTitle(snap.windowTitle)
+		title := t.resolvedTitle(snap)
 		seen[snap.windowID] = struct{}{}
 
 		if session, exists := t.sessions[snap.windowID]; exists {
@@ -309,6 +311,25 @@ func ensureWindowEnumerationAvailable() error {
 
 func normalizeWindowTitle(title string) string {
 	return strings.TrimSpace(title)
+}
+
+func (t *WindowTracker) resolvedTitle(snap windowSnapshot) string {
+	title := normalizeWindowTitle(snap.windowTitle)
+	if title != "" || snap.ownerPID == 0 {
+		return title
+	}
+	fallback, ok := fetchAXWindowTitle(snap.ownerPID, snap.windowID)
+	if ok && fallback != "" {
+		return normalizeWindowTitle(fallback)
+	}
+	warnAccessibilityOnce()
+	return title
+}
+
+func warnAccessibilityOnce() {
+	accessibilityWarnOnce.Do(func() {
+		logInfo("enable Accessibility for ghost (System Settings → Privacy & Security → Accessibility) to capture Electron window titles")
+	})
 }
 
 func (cfg WindowTrackerConfig) active() bool {
