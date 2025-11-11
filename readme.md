@@ -26,6 +26,21 @@ Run `task` to see all possible commands.
    run_on_start = true
    ```
 
+   To keep long-running processes alive (for example dev servers or tunnels), add `[[servers]]` entries. Ghost will launch each server on start, restart it if it exits, and capture all TTY input/output into a log file.
+
+   ```toml
+   [[servers]]
+   name = "web"
+   cwd = "/Users/nikiv/code/web-app"
+   command = "npm run dev"
+   restart = true            # default
+   restart_delay_ms = 500    # optional
+   log_path = "~/logs/web.log" # optional; defaults to ~/.local/state/ghost/servers/<name>.log
+   pty = true                # default; makes the process believe it's in a terminal
+   ```
+
+   Every server stream is mirrored to the daemon output and appended to the configured log (or the default under `~/.local/state/ghost/servers`). Set `pty = false` for programs that should run without a pseudo-terminal.
+
 2. From the repo run `task run` to start the Go daemon directly, or `task deploy` to install a `ghost` binary to `~/bin`.
 3. Save the config file you pointed at and ghost will hot-reload watchers automatically.
 

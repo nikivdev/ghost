@@ -64,6 +64,7 @@ func (m *WatchManager) swapJobs(jobs []*watchJob) []*watchJob {
 type GhostDaemon struct {
 	configPath    string
 	manager       *WatchManager
+	serverManager *ServerManager
 	windowTracker *WindowTracker
 	watcher       *fsnotify.Watcher
 	watcherDone   chan struct{}
@@ -77,6 +78,7 @@ func NewGhostDaemon(configPath string) *GhostDaemon {
 	return &GhostDaemon{
 		configPath:    configPath,
 		manager:       &WatchManager{},
+		serverManager: &ServerManager{},
 		windowTracker: NewWindowTracker(),
 		debounceTime:  150 * time.Millisecond,
 	}
@@ -102,6 +104,9 @@ func (d *GhostDaemon) Stop() {
 		d.watcher = nil
 	}
 	d.manager.StopAll()
+	if d.serverManager != nil {
+		d.serverManager.StopAll()
+	}
 	if d.windowTracker != nil {
 		d.windowTracker.Stop()
 	}
@@ -119,6 +124,9 @@ func (d *GhostDaemon) reloadConfig() error {
 		if err := d.windowTracker.Apply(cfg.WindowTracker); err != nil {
 			return err
 		}
+	}
+	if d.serverManager != nil {
+		d.serverManager.Apply(cfg.Servers)
 	}
 	d.manager.Apply(cfg)
 	return nil

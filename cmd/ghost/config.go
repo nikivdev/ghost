@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	toml "github.com/pelletier/go-toml/v2"
 )
@@ -32,6 +33,7 @@ var allowedEvents = map[string]struct{}{
 type rawConfig struct {
 	Defaults      rawDefaults      `toml:"defaults"`
 	Watchers      []rawWatcher     `toml:"watchers"`
+	Servers       []rawServer      `toml:"servers"`
 	WindowTracker rawWindowTracker `toml:"window_tracker"`
 }
 
@@ -62,6 +64,20 @@ type rawWatcher struct {
 	EnvOverrides   map[string]string `toml:"-"`
 }
 
+type rawServer struct {
+	Name           string         `toml:"name"`
+	Command        any            `toml:"command"`
+	Args           any            `toml:"args"`
+	Cwd            any            `toml:"cwd"`
+	Env            map[string]any `toml:"env"`
+	Restart        *bool          `toml:"restart"`
+	RestartDelayMs *int64         `toml:"restart_delay_ms"`
+	KillTimeoutMs  *int64         `toml:"kill_timeout_ms"`
+	Shell          *bool          `toml:"shell"`
+	LogPath        any            `toml:"log_path"`
+	Pty            *bool          `toml:"pty"`
+}
+
 type rawWindowTracker struct {
 	Enabled        *bool  `toml:"enabled"`
 	Applications   any    `toml:"applications"`
@@ -71,6 +87,7 @@ type rawWindowTracker struct {
 
 type NormalizedConfig struct {
 	Watchers      []NormalizedWatcher
+	Servers       []NormalizedServer
 	WindowTracker WindowTrackerConfig
 }
 
@@ -101,6 +118,21 @@ type NormalizedWatcher struct {
 	KillTimeout    time.Duration
 	UseShell       bool
 	SingleFile     string
+}
+
+type NormalizedServer struct {
+	ID             string
+	Name           string
+	Command        []string
+	CommandDisplay string
+	Env            map[string]string
+	Cwd            string
+	Restart        bool
+	RestartDelay   time.Duration
+	KillTimeout    time.Duration
+	UseShell       bool
+	UsePTY         bool
+	LogPath        string
 }
 
 type WindowTrackerConfig struct {
@@ -139,6 +171,7 @@ func normalizeConfig(raw rawConfig) (NormalizedConfig, error) {
 
 	result := NormalizedConfig{
 		Watchers: make([]NormalizedWatcher, 0, len(raw.Watchers)),
+		Servers:  make([]NormalizedServer, 0, len(raw.Servers)),
 	}
 
 	for i, watcher := range raw.Watchers {
@@ -147,6 +180,14 @@ func normalizeConfig(raw rawConfig) (NormalizedConfig, error) {
 			return NormalizedConfig{}, err
 		}
 		result.Watchers = append(result.Watchers, normalized)
+	}
+
+	for i, server := range raw.Servers {
+		normalized, err := normalizeServer(server, i, defaults)
+		if err != nil {
+			return NormalizedConfig{}, err
+		}
+		result.Servers = append(result.Servers, normalized)
 	}
 
 	tracker, err := normalizeWindowTracker(raw.WindowTracker)
@@ -271,6 +312,89 @@ func normalizeWatcher(raw rawWatcher, index int, defaults rawDefaults) (Normaliz
 		KillTimeout:    killTimeout,
 		UseShell:       useShell,
 		SingleFile:     singleFile,
+	}, nil
+}
+
+func normalizeServer(raw rawServer, index int, defaults rawDefaults) (NormalizedServer, error) {
+	name := strings.TrimSpace(raw.Name)
+	if name == "" {
+		name = fmt.Sprintf("server-%d", index+1)
+	}
+
+	commandParts, displayParts, err := parseCommandSpec(raw.Command, raw.Args)
+	if err != nil {
+		return NormalizedServer{}, fmt.Errorf("servers[%d]: %w", index, err)
+	}
+	if len(commandParts) == 0 {
+		return NormalizedServer{}, fmt.Errorf("servers[%d]: command must not be empty", index)
+	}
+
+	env, err := normalizeEnv(raw.Env)
+	if err != nil {
+		return NormalizedServer{}, fmt.Errorf("servers[%d]: invalid env: %w", index, err)
+	}
+
+	cwd := ""
+	if str, ok := valueToString(raw.Cwd); ok && str != "" {
+		resolved, err := resolvePath(str)
+		if err != nil {
+			return NormalizedServer{}, fmt.Errorf("servers[%d]: resolve cwd: %w", index, err)
+		}
+		cwd = resolved
+	} else {
+		if wd, err := os.Getwd(); err == nil {
+			cwd = wd
+		} else {
+			cwd = "."
+		}
+	}
+
+	restart := valueOrDefaultBool(raw.Restart, true)
+
+	restartDelay := chooseDuration(raw.RestartDelayMs, defaults.RestartDelayMs, defaultRestartDelay)
+	killTimeout := chooseDuration(raw.KillTimeoutMs, defaults.KillTimeoutMs, defaultKillTimeout)
+
+	useShell := valueOrDefaultBool(raw.Shell, false)
+	usePTY := valueOrDefaultBool(raw.Pty, true)
+
+	logPathInput := ""
+	if str, ok := valueToString(raw.LogPath); ok {
+		logPathInput = str
+	}
+	if logPathInput == "" {
+		defaultPath, err := defaultServerLogPath(name)
+		if err != nil {
+			return NormalizedServer{}, fmt.Errorf("servers[%d]: %w", index, err)
+		}
+		logPathInput = defaultPath
+	}
+	logPath, err := resolvePath(logPathInput)
+	if err != nil {
+		return NormalizedServer{}, fmt.Errorf("servers[%d]: resolve log path: %w", index, err)
+	}
+
+	commandDisplay := joinDisplayParts(displayParts)
+	commandExec := make([]string, len(commandParts))
+	copy(commandExec, commandParts)
+
+	if useShell {
+		commandDisplay = buildShellCommand(displayParts)
+		commandExec = []string{defaultShell(), "-lc", commandDisplay}
+	}
+
+	return NormalizedServer{
+		ID:             fmt.Sprintf("servers[%d]", index),
+		Name:           name,
+		Command:        commandExec,
+		CommandDisplay: commandDisplay,
+		Env:            env,
+		Cwd:            cwd,
+		Restart:        restart,
+		RestartDelay:   restartDelay,
+		KillTimeout:    killTimeout,
+		UseShell:       useShell,
+		UsePTY:         usePTY,
+		LogPath:        logPath,
 	}, nil
 }
 
@@ -794,4 +918,63 @@ func (w NormalizedWatcher) matches(path string) bool {
 
 func posixPath(input string) string {
 	return strings.ReplaceAll(input, string(filepath.Separator), "/")
+}
+
+func defaultServerLogPath(name string) (string, error) {
+	dir, err := defaultServersDir()
+	if err != nil {
+		return "", err
+	}
+	base := sanitizeFilename(name)
+	if base == "" {
+		base = "server"
+	}
+	return filepath.Join(dir, base+".log"), nil
+}
+
+func defaultServersDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home: %w", err)
+	}
+	return filepath.Join(home, ".local", "state", "ghost", "servers"), nil
+}
+
+func sanitizeFilename(input string) string {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return ""
+	}
+
+	var (
+		builder  strings.Builder
+		lastDash bool
+	)
+
+	for _, r := range input {
+		lower := unicode.ToLower(r)
+		switch {
+		case (lower >= 'a' && lower <= 'z') || (lower >= '0' && lower <= '9'):
+			builder.WriteRune(lower)
+			lastDash = false
+		case lower == '-' || lower == '_':
+			builder.WriteRune(lower)
+			lastDash = lower == '-'
+		case unicode.IsSpace(lower) || lower == '/' || lower == '\\' || lower == '.':
+			if !lastDash && builder.Len() > 0 {
+				builder.WriteRune('-')
+				lastDash = true
+			}
+		case unicode.IsLetter(lower) || unicode.IsDigit(lower):
+			builder.WriteRune(lower)
+			lastDash = false
+		default:
+			if !lastDash && builder.Len() > 0 {
+				builder.WriteRune('-')
+				lastDash = true
+			}
+		}
+	}
+
+	return strings.Trim(builder.String(), "-_")
 }
