@@ -23,6 +23,7 @@ type windowSnapshot struct {
 	windowID    uint64
 	layer       int
 	ownerPID    int32
+	onScreen    bool
 }
 
 type WindowTracker struct {

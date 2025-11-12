@@ -67,6 +67,18 @@ static int ghostReadSInt64(CFDictionaryRef dict, CFStringRef key, int64_t *out) 
 	return 0;
 }
 
+static int ghostReadBool(CFDictionaryRef dict, CFStringRef key, int32_t *out) {
+	const void *value = CFDictionaryGetValue(dict, key);
+	if (value == NULL) {
+		return 0;
+	}
+	if (CFGetTypeID(value) == CFBooleanGetTypeID()) {
+		*out = CFBooleanGetValue((CFBooleanRef)value) ? 1 : 0;
+		return 1;
+	}
+	return 0;
+}
+
 static CFStringRef ghostCopyAXWindowTitle(pid_t pid, uint64_t windowID) {
 	AXUIElementRef app = AXUIElementCreateApplication(pid);
 	if (app == NULL) {
@@ -145,6 +157,8 @@ func captureWindowSnapshot() ([]windowSnapshot, error) {
 		C.ghostReadSInt32(dict, C.kCGWindowOwnerPID, &ownerPID)
 		var windowID C.int64_t
 		C.ghostReadSInt64(dict, C.kCGWindowNumber, &windowID)
+		var onScreen C.int32_t
+		C.ghostReadBool(dict, C.kCGWindowIsOnscreen, &onScreen)
 
 		result = append(result, windowSnapshot{
 			ownerName:   owner,
@@ -152,6 +166,7 @@ func captureWindowSnapshot() ([]windowSnapshot, error) {
 			windowID:    uint64(windowID),
 			layer:       int(layer),
 			ownerPID:    int32(ownerPID),
+			onScreen:    onScreen != 0,
 		})
 	}
 	return result, nil

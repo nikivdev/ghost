@@ -65,6 +65,7 @@ type GhostDaemon struct {
 	configPath    string
 	manager       *WatchManager
 	serverManager *ServerManager
+	streaming     *StreamingController
 	windowTracker *WindowTracker
 	watcher       *fsnotify.Watcher
 	watcherDone   chan struct{}
@@ -79,6 +80,7 @@ func NewGhostDaemon(configPath string) *GhostDaemon {
 		configPath:    configPath,
 		manager:       &WatchManager{},
 		serverManager: &ServerManager{},
+		streaming:     NewStreamingController(),
 		windowTracker: NewWindowTracker(),
 		debounceTime:  150 * time.Millisecond,
 	}
@@ -107,6 +109,9 @@ func (d *GhostDaemon) Stop() {
 	if d.serverManager != nil {
 		d.serverManager.StopAll()
 	}
+	if d.streaming != nil {
+		d.streaming.Stop()
+	}
 	if d.windowTracker != nil {
 		d.windowTracker.Stop()
 	}
@@ -127,6 +132,11 @@ func (d *GhostDaemon) reloadConfig() error {
 	}
 	if d.serverManager != nil {
 		d.serverManager.Apply(cfg.Servers)
+	}
+	if d.streaming != nil {
+		if err := d.streaming.Apply(cfg.Streaming); err != nil {
+			return err
+		}
 	}
 	d.manager.Apply(cfg)
 	return nil

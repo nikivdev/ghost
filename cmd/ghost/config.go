@@ -34,6 +34,7 @@ type rawConfig struct {
 	Defaults      rawDefaults      `toml:"defaults"`
 	Watchers      []rawWatcher     `toml:"watchers"`
 	Servers       []rawServer      `toml:"servers"`
+	Streaming     rawStreaming     `toml:"streaming"`
 	WindowTracker rawWindowTracker `toml:"window_tracker"`
 }
 
@@ -85,9 +86,22 @@ type rawWindowTracker struct {
 	DBPath         string `toml:"db_path"`
 }
 
+type rawStreaming struct {
+	Enabled             *bool  `toml:"enabled"`
+	ObsHost             string `toml:"obs_host"`
+	ObsPassword         string `toml:"obs_password"`
+	LiveScene           string `toml:"live_scene"`
+	PrivacyScene        string `toml:"privacy_scene"`
+	ExcludeApplications any    `toml:"exclude_applications"`
+	PollIntervalMs      *int64 `toml:"poll_interval_ms"`
+	AutoStart           *bool  `toml:"auto_start"`
+	PrivacyMode         string `toml:"privacy_mode"`
+}
+
 type NormalizedConfig struct {
 	Watchers      []NormalizedWatcher
 	Servers       []NormalizedServer
+	Streaming     StreamingConfig
 	WindowTracker WindowTrackerConfig
 }
 
@@ -143,6 +157,24 @@ type WindowTrackerConfig struct {
 	TrackAll     bool
 }
 
+type StreamingConfig struct {
+	Enabled              bool
+	OBSScheme            string
+	OBSHost              string
+	OBSPassword          string
+	LiveScene            string
+	PrivacyScene         string
+	ExcludedApplications []string
+	excludedLookup       map[string]struct{}
+	PollInterval         time.Duration
+	AutoStart            bool
+	PrivacyMode          string
+}
+
+func (s StreamingConfig) active() bool {
+	return s.Enabled && s.OBSHost != "" && s.LiveScene != "" && s.PrivacyScene != ""
+}
+
 type Trigger struct {
 	Event string
 	Path  string
@@ -189,6 +221,12 @@ func normalizeConfig(raw rawConfig) (NormalizedConfig, error) {
 		}
 		result.Servers = append(result.Servers, normalized)
 	}
+
+	streaming, err := normalizeStreaming(raw.Streaming)
+	if err != nil {
+		return NormalizedConfig{}, err
+	}
+	result.Streaming = streaming
 
 	tracker, err := normalizeWindowTracker(raw.WindowTracker)
 	if err != nil {
@@ -431,6 +469,90 @@ func normalizeWindowTracker(raw rawWindowTracker) (WindowTrackerConfig, error) {
 		DBPath:       dbPath,
 		TrackAll:     trackAll,
 	}, nil
+}
+
+func normalizeStreaming(raw rawStreaming) (StreamingConfig, error) {
+	const (
+		defaultOBSHost      = "ws://127.0.0.1:4455"
+		defaultLiveScene    = "Desktop"
+		defaultPrivacyScene = "Ghost Privacy"
+		defaultPrivacyMode  = "onscreen"
+	)
+
+	pollInterval := chooseDuration(raw.PollIntervalMs, nil, 250*time.Millisecond)
+	if pollInterval <= 0 {
+		pollInterval = 250 * time.Millisecond
+	}
+
+	appsRaw, err := valueToStringSlice(raw.ExcludeApplications)
+	if err != nil {
+		return StreamingConfig{}, fmt.Errorf("streaming.exclude_applications: %w", err)
+	}
+	apps := normalizeAppList(appsRaw)
+
+	hostInput := strings.TrimSpace(raw.ObsHost)
+	if hostInput == "" {
+		hostInput = defaultOBSHost
+	}
+	scheme := "ws"
+	switch {
+	case strings.HasPrefix(hostInput, "ws://"):
+		hostInput = strings.TrimPrefix(hostInput, "ws://")
+		scheme = "ws"
+	case strings.HasPrefix(hostInput, "wss://"):
+		hostInput = strings.TrimPrefix(hostInput, "wss://")
+		scheme = "wss"
+	case strings.Contains(hostInput, "://"):
+		parts := strings.SplitN(hostInput, "://", 2)
+		scheme = parts[0]
+		hostInput = parts[1]
+	}
+	host := strings.TrimSpace(hostInput)
+	if host == "" {
+		host = strings.TrimPrefix(defaultOBSHost, "ws://")
+	}
+
+	liveScene := strings.TrimSpace(raw.LiveScene)
+	if liveScene == "" {
+		liveScene = defaultLiveScene
+	}
+	privacyScene := strings.TrimSpace(raw.PrivacyScene)
+	if privacyScene == "" {
+		privacyScene = defaultPrivacyScene
+	}
+
+	mode := strings.ToLower(strings.TrimSpace(raw.PrivacyMode))
+	if mode == "" {
+		mode = defaultPrivacyMode
+	}
+	switch mode {
+	case "onscreen", "frontmost":
+	default:
+		return StreamingConfig{}, fmt.Errorf("streaming.privacy_mode: unsupported value %q (use onscreen or frontmost)", mode)
+	}
+
+	cfg := StreamingConfig{
+		Enabled:              valueOrDefaultBool(raw.Enabled, false),
+		OBSScheme:            scheme,
+		OBSHost:              host,
+		OBSPassword:          strings.TrimSpace(raw.ObsPassword),
+		LiveScene:            liveScene,
+		PrivacyScene:         privacyScene,
+		ExcludedApplications: apps,
+		excludedLookup:       make(map[string]struct{}, len(apps)),
+		PollInterval:         pollInterval,
+		AutoStart:            valueOrDefaultBool(raw.AutoStart, false),
+		PrivacyMode:          mode,
+	}
+
+	for _, app := range apps {
+		if app == "" {
+			continue
+		}
+		cfg.excludedLookup[strings.ToLower(app)] = struct{}{}
+	}
+
+	return cfg, nil
 }
 
 func choosePath(raw rawWatcher) (string, error) {
@@ -920,6 +1042,33 @@ func posixPath(input string) string {
 	return strings.ReplaceAll(input, string(filepath.Separator), "/")
 }
 
+func streamingConfigsEqual(a, b StreamingConfig) bool {
+	if a.Enabled != b.Enabled ||
+		a.OBSScheme != b.OBSScheme ||
+		a.OBSHost != b.OBSHost ||
+		a.OBSPassword != b.OBSPassword ||
+		a.LiveScene != b.LiveScene ||
+		a.PrivacyScene != b.PrivacyScene ||
+		a.PrivacyMode != b.PrivacyMode ||
+		a.PollInterval != b.PollInterval ||
+		a.AutoStart != b.AutoStart {
+		return false
+	}
+	return stringSlicesEqual(a.ExcludedApplications, b.ExcludedApplications)
+}
+
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
 func defaultServerLogPath(name string) (string, error) {
 	dir, err := defaultServersDir()
 	if err != nil {
@@ -977,4 +1126,16 @@ func sanitizeFilename(input string) string {
 	}
 
 	return strings.Trim(builder.String(), "-_")
+}
+
+func (s StreamingConfig) excludesApp(name string) bool {
+	if len(s.excludedLookup) == 0 {
+		return false
+	}
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return false
+	}
+	_, ok := s.excludedLookup[key]
+	return ok
 }

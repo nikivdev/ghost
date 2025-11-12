@@ -41,6 +41,29 @@ Run `task` to see all possible commands.
 
    Every server stream is mirrored to the daemon output and appended to the configured log (or the default under `~/.local/state/ghost/servers`). Set `pty = false` for programs that should run without a pseudo-terminal.
 
+   To stream your Mac to a remote server with OBS while avoiding sensitive apps, configure the `streaming` table. Ghost connects to obs-websocket, auto-starts streaming (optional) and swaps to a dedicated privacy scene whenever any excluded application is visible.
+
+   ```toml
+   [streaming]
+   enabled = true
+   obs_host = "127.0.0.1:4455"     # obs-websocket host (scheme optional, ws:// by default)
+   obs_password = "super-secret"   # optional
+   live_scene = "Desktop"
+   privacy_scene = "Ghost Privacy"
+   auto_start = true               # start OBS streaming once connected
+   exclude_applications = ["Telegram", "Spark", "1Password"]
+   privacy_mode = "onscreen"       # or "frontmost" if you only care about the active app
+   poll_interval_ms = 250          # optional, defaults to 250ms
+   ```
+
+   Requirements:
+
+   - OBS 28+ with obs-websocket enabled (Tools → WebSocket Server Settings). Point `obs_host` at that listener; use `wss://...` if you proxy TLS.
+   - Create two OBS scenes (`live_scene` for normal streaming, `privacy_scene` for the standby slate). Ghost simply flips between them; layout/design is up to you.
+   - Grant `ghost` screen-recording + accessibility permissions in macOS so it can enumerate on-screen windows and detect excluded apps.
+
+   When any excluded application owns a visible window, Ghost switches to the privacy scene so the content never leaves your machine. As soon as those apps leave the screen, Ghost automatically reverts to the live scene and keeps the stream running to your remote destination.
+
 2. From the repo run `task run` to start the Go daemon directly, or `task deploy` to install a `ghost` binary to `~/bin`.
 3. Save the config file you pointed at and ghost will hot-reload watchers automatically.
 
